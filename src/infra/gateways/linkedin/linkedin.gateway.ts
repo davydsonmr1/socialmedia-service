@@ -18,13 +18,16 @@ import type {
   ILinkedInGateway,
   LinkedInTokenResult,
   LinkedInUserProfile,
+  LinkedInPostSummary,
 } from '../../../domain/gateways/i-linkedin.gateway.js';
 import { GatewayError } from '../../../domain/errors/gateway.error.js';
 import { UnauthorizedError } from '../../../domain/errors/unauthorized.error.js';
+import { RateLimitError } from '../../../domain/errors/rate-limit.error.js';
 
 import {
   LinkedInTokenResponseSchema,
   LinkedInProfileResponseSchema,
+  LinkedInPostsResponseSchema,
   LinkedInErrorResponseSchema,
 } from './linkedin.schemas.js';
 
@@ -39,6 +42,7 @@ const LINKEDIN_USERINFO_URL = 'https://api.linkedin.com/v2/userinfo';
  * Prevents the application from hanging if LinkedIn is slow.
  */
 const DEFAULT_TIMEOUT_MS = 8_000;
+const POSTS_TIMEOUT_MS = 10_000;
 
 /**
  * LinkedIn OAuth 2.0 scopes.
@@ -197,6 +201,78 @@ export class LinkedInGateway implements ILinkedInGateway {
     };
   }
 
+  /**
+   * Fetches recent posts authored by the user.
+   * Uses LinkedIn's Posts API (v2/posts) with author filter.
+   */
+  async fetchRecentPosts(
+    accessToken: string,
+    authorUrn: string,
+  ): Promise<LinkedInPostSummary[]> {
+    const params = new URLSearchParams({
+      author: authorUrn,
+      q: 'author',
+      count: '20',
+      sortBy: 'LAST_MODIFIED',
+    });
+
+    const url = `${LINKEDIN_API_BASE}/posts?${params.toString()}`;
+
+    const response = await this.fetchWithTimeout(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Accept': 'application/json',
+        'LinkedIn-Version': '202401',
+        'X-Restli-Protocol-Version': '2.0.0',
+      },
+    }, POSTS_TIMEOUT_MS);
+
+    // ─── Rate Limit Detection ───
+    if (response.status === 429) {
+      const retryAfterHeader = response.headers.get('Retry-After');
+      const retryAfterMs = retryAfterHeader
+        ? parseInt(retryAfterHeader, 10) * 1000
+        : undefined;
+
+      throw new RateLimitError(
+        'LinkedIn API rate limit exceeded. Please try again later.',
+        retryAfterMs,
+      );
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new UnauthorizedError(
+        'LinkedIn access token is invalid or expired.',
+      );
+    }
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, 'fetchRecentPosts');
+    }
+
+    const rawJson: unknown = await response.json();
+
+    const parsed = this.parseWithSchema(
+      LinkedInPostsResponseSchema,
+      rawJson,
+      'LinkedInPostsResponse',
+    );
+
+    // Map LinkedIn's complex structure to our simplified domain type
+    return parsed.elements.map((post) => {
+      const publishedAtMs = post.publishedAt ?? post.created?.time ?? Date.now();
+      const imageUrl = post.content?.media?.originalUrl;
+
+      return {
+        externalPostId: post.id,
+        text: post.commentary,
+        imageUrl,
+        publishedAt: new Date(publishedAtMs),
+      };
+    });
+  }
+
   // ----- Private Helpers -----
 
   /**
@@ -206,9 +282,11 @@ export class LinkedInGateway implements ILinkedInGateway {
   private async fetchWithTimeout(
     url: string,
     init: RequestInit,
+    customTimeoutMs?: number,
   ): Promise<Response> {
+    const timeout = customTimeoutMs ?? this.timeoutMs;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
       const response = await fetch(url, {

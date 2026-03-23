@@ -28,6 +28,17 @@ export interface LinkedInUserProfile {
 }
 
 /**
+ * A simplified post representation returned by the gateway.
+ * Stripped of all LinkedIn-specific nesting.
+ */
+export interface LinkedInPostSummary {
+  externalPostId: string;
+  text: string;
+  imageUrl?: string | undefined;
+  publishedAt: Date;
+}
+
+/**
  * Domain gateway interface for LinkedIn OAuth 2.0.
  *
  * Implementations MUST:
@@ -62,4 +73,15 @@ export interface ILinkedInGateway {
    * @throws UnauthorizedError if the token is invalid/expired
    */
   getUserProfile(accessToken: string): Promise<LinkedInUserProfile>;
+
+  /**
+   * Fetch recent posts authored by the user.
+   *
+   * @param accessToken - A valid LinkedIn access token
+   * @param authorUrn - The user's LinkedIn URN (e.g., "urn:li:person:xxxxx")
+   * @returns Array of simplified post summaries
+   * @throws GatewayError if LinkedIn returns an error
+   * @throws RateLimitError if LinkedIn returns HTTP 429
+   */
+  fetchRecentPosts(accessToken: string, authorUrn: string): Promise<LinkedInPostSummary[]>;
 }
