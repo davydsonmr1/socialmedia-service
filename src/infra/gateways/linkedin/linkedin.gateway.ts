@@ -273,6 +273,49 @@ export class LinkedInGateway implements ILinkedInGateway {
     });
   }
 
+  /**
+   * Refreshes an expired access token using a refresh token.
+   * Uses the same token endpoint but with grant_type=refresh_token.
+   */
+  async refreshAccessToken(refreshToken: string): Promise<LinkedInTokenResult> {
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
+    });
+
+    const response = await this.fetchWithTimeout(
+      `${LINKEDIN_AUTH_BASE}/accessToken`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString(),
+      },
+    );
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, 'refreshAccessToken');
+    }
+
+    const rawJson: unknown = await response.json();
+
+    const parsed = this.parseWithSchema(
+      LinkedInTokenResponseSchema,
+      rawJson,
+      'LinkedInTokenResponse (refresh)',
+    );
+
+    return {
+      accessToken: parsed.access_token,
+      expiresIn: parsed.expires_in,
+      refreshToken: parsed.refresh_token,
+      refreshTokenExpiresIn: parsed.refresh_token_expires_in,
+    };
+  }
+
   // ----- Private Helpers -----
 
   /**

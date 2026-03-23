@@ -140,6 +140,46 @@ Erros internos (SQL, Node.js exceptions) **nunca são expostos ao cliente**. O e
 
 100 requisições por minuto por IP — proteção contra brute-force e DDoS básico.
 
+### 8. Cron Webhook Authentication
+
+A rota do worker (`POST /api/internal/cron/sync`) é protegida por:
+- `CRON_SECRET_KEY` via header `Authorization: Bearer <key>`
+- **SHA-256 + `timingSafeEqual`** — impede ataques de *timing* que poderiam revelar a chave caractere por caractere
+- Concorrência sequencial (não usa `Promise.all`) para evitar DDoS contra LinkedIn
+
+---
+
+## 🔄 Cron / Worker Configuration
+
+O worker de sincronização roda via uma rota HTTP protegida chamada periodicamente.
+
+### Opção 1: Vercel Cron
+
+Crie o arquivo `vercel.json` na raiz:
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/internal/cron/sync",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
+```
+
+> **Nota:** Na Vercel, configure `CRON_SECRET` como variável de ambiente. O middleware valida o header automaticamente.
+
+### Opção 2: Serviço de Ping Externo
+
+Use um serviço como [cron-job.org](https://cron-job.org), [EasyCron](https://www.easycron.com), ou GitHub Actions:
+
+```bash
+# Chamada manual / teste
+curl -X POST https://your-app.vercel.app/api/internal/cron/sync \
+  -H "Authorization: Bearer YOUR_CRON_SECRET_KEY"
+```
+
 ---
 
 ## 📂 Estrutura do Projeto
@@ -148,18 +188,18 @@ Erros internos (SQL, Node.js exceptions) **nunca são expostos ao cliente**. O e
 src/
 ├── domain/           # Regras de negócio puras (zero imports de frameworks)
 │   ├── entities/     # User, OAuthCredential, PortfolioApiKey, PostCache
-│   ├── errors/       # DomainError, UnauthorizedError, GatewayError...
+│   ├── errors/       # DomainError, UnauthorizedError, GatewayError, RateLimitError...
 │   ├── gateways/     # ILinkedInGateway interface
 │   ├── interfaces/   # ICryptoService interface
 │   └── repositories/ # IUserRepository, IOAuthCredentialRepository...
 ├── application/      # Casos de Uso (orquestração)
 │   ├── dtos/         # Data Transfer Objects
-│   └── use-cases/    # GenerateOAuthUrl, ProcessOAuthCallback
+│   └── use-cases/    # GenerateOAuthUrl, ProcessOAuthCallback, SyncUserPosts, SyncAllUsers
 ├── infra/            # Implementações concretas
 │   ├── crypto/       # AesGcmCryptoService
-│   ├── database/     # Prisma repositories (Task 7)
+│   ├── database/     # Prisma repositories (Task 9)
 │   ├── gateways/     # LinkedInGateway (fetch + Zod validation)
-│   └── http/         # Fastify app, controllers, routes, error-handler
+│   └── http/         # Fastify app, controllers, routes, middlewares, error-handler
 └── main/             # Composition Root (server.ts)
 ```
 

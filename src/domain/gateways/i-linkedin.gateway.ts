@@ -84,4 +84,13 @@ export interface ILinkedInGateway {
    * @throws RateLimitError if LinkedIn returns HTTP 429
    */
   fetchRecentPosts(accessToken: string, authorUrn: string): Promise<LinkedInPostSummary[]>;
+
+  /**
+   * Refresh an expired access token using a refresh token.
+   *
+   * @param refreshToken - A valid LinkedIn refresh token
+   * @returns New token data (fresh access token + expiry)
+   * @throws GatewayError if LinkedIn rejects the refresh token
+   */
+  refreshAccessToken(refreshToken: string): Promise<LinkedInTokenResult>;
 }

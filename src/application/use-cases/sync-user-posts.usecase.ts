@@ -1,27 +1,29 @@
 // =====================================================
-// LinkedBridge — SyncUserPosts Use Case
+// LinkedBridge — SyncUserPosts Use Case (v2 with Refresh)
 // =====================================================
 // Orchestrates the full post synchronization pipeline:
 //
 // 1. Retrieve encrypted OAuth credential
-// 2. Check token expiry (fail-fast if expired)
+// 2. Check token expiry → attempt refresh if expired
 // 3. Decrypt the access token (AES-256-GCM)
 // 4. Fetch posts from LinkedIn via Gateway
 // 5. IMMEDIATELY destroy plaintext token in memory
 // 6. Sanitize content (Stored XSS prevention)
 // 7. Upsert sanitized posts into the cache
 //
+// REFRESH TOKEN FLOW (added in Task 8):
+// If the access token has expired and a refresh token is
+// available, we decrypt the refresh token, call LinkedIn's
+// refresh endpoint, encrypt the new access token, persist
+// the updated credential, and retry the fetch.
+//
 // MEMORY ISOLATION:
-// The decrypted access token exists in memory for the
-// absolute minimum number of operations (steps 4-5).
-// After the Gateway call, the variable is overwritten
-// with an empty string to hint the GC to release it.
-// This is a defense-in-depth measure — a memory dump
-// should never contain plaintext tokens.
+// All plaintext tokens (access and refresh) are nullified
+// immediately after use.
 // =====================================================
 
 import type { ICryptoService } from '../../domain/interfaces/crypto.interface.js';
-import type { ILinkedInGateway } from '../../domain/gateways/i-linkedin.gateway.js';
+import type { ILinkedInGateway, LinkedInPostSummary } from '../../domain/gateways/i-linkedin.gateway.js';
 import type { IOAuthCredentialRepository } from '../../domain/repositories/i-oauth-credential.repository.js';
 import type { IPostCacheRepository } from '../../domain/repositories/i-post-cache.repository.js';
 import type { IUserRepository } from '../../domain/repositories/i-user.repository.js';
@@ -40,6 +42,7 @@ export interface SyncUserPostsOutput {
   userId: string;
   postsCount: number;
   syncedAt: Date;
+  tokenRefreshed: boolean;
 }
 
 export class SyncUserPostsUseCase {
@@ -54,17 +57,13 @@ export class SyncUserPostsUseCase {
   /**
    * Synchronizes a user's LinkedIn posts to the local cache.
    *
-   * This method:
-   * 1. Validates the user and credential exist
-   * 2. Checks token expiry (fail-fast for refresh flow)
-   * 3. Decrypts the token, fetches posts, then destroys the plaintext
-   * 4. Sanitizes all content (XSS prevention)
-   * 5. Upserts the cleaned posts into PostCache
+   * If the token is expired and a refresh token exists, it will
+   * automatically renew the access token before fetching posts.
    *
    * @param userId - The internal user ID (UUID)
    * @returns Summary of the sync operation
    * @throws ResourceNotFoundError if user or credential not found
-   * @throws TokenExpiredError if the access token has expired
+   * @throws TokenExpiredError if the token is expired AND no refresh token exists
    */
   async execute(userId: string): Promise<SyncUserPostsOutput> {
     // ─── Step 1: Verify the user exists ───
@@ -79,18 +78,61 @@ export class SyncUserPostsUseCase {
       throw new ResourceNotFoundError('OAuth credential');
     }
 
-    // ─── Step 3: Check token expiry (fail-fast) ───
-    // Uses the 5-minute buffer defined in the entity.
-    // If expired, the caller (or a future task) must handle token refresh.
+    // ─── Step 3: Check token expiry + attempt refresh ───
+    let tokenRefreshed = false;
+
     if (isTokenExpired(credential)) {
-      throw new TokenExpiredError(
-        'The LinkedIn access token has expired. Re-authorization is required.',
+      // If there's no refresh token, we can't renew — user must re-authorize.
+      if (!credential.refreshToken) {
+        throw new TokenExpiredError(
+          'The LinkedIn access token has expired and no refresh token is available.',
+        );
+      }
+
+      // ─── Refresh Flow ───
+      // 1. Decrypt the refresh token
+      // 2. Exchange it for a new access token via LinkedIn
+      // 3. Encrypt the new access token
+      // 4. Persist the updated credential
+      // 5. Destroy all plaintext tokens
+      let plainRefreshToken: string | null = this.cryptoService.decrypt(
+        credential.refreshToken,
+        credential.iv,
+        credential.authTag,
       );
+
+      try {
+        const refreshResult = await this.linkedInGateway.refreshAccessToken(
+          plainRefreshToken,
+        );
+
+        // IMMEDIATELY encrypt the new access token
+        const newEncrypted = this.cryptoService.encrypt(refreshResult.accessToken);
+
+        const newExpiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000);
+
+        await this.oauthCredentialRepository.updateToken(userId, {
+          encryptedAccessToken: newEncrypted.encryptedText,
+          iv: newEncrypted.iv,
+          authTag: newEncrypted.authTag,
+          refreshToken: refreshResult.refreshToken ?? credential.refreshToken,
+          expiresAt: newExpiresAt,
+        });
+
+        // Update the local credential reference for the fetch step
+        credential.encryptedAccessToken = newEncrypted.encryptedText;
+        credential.iv = newEncrypted.iv;
+        credential.authTag = newEncrypted.authTag;
+        credential.expiresAt = newExpiresAt;
+
+        tokenRefreshed = true;
+      } finally {
+        // MEMORY ISOLATION: Destroy plaintext refresh token
+        plainRefreshToken = null;
+      }
     }
 
-    // ─── Step 4: Decrypt the access token ───
-    // MEMORY ISOLATION: The plaintext token is stored in a `let`
-    // variable so we can overwrite it immediately after use.
+    // ─── Step 4: Decrypt the (possibly refreshed) access token ───
     let plainTextToken: string | null = this.cryptoService.decrypt(
       credential.encryptedAccessToken,
       credential.iv,
@@ -98,30 +140,20 @@ export class SyncUserPostsUseCase {
     );
 
     // ─── Step 5: Fetch posts from LinkedIn ───
-    // The author URN is constructed from the provider ID stored
-    // during the OAuth flow.
     const authorUrn = `urn:li:person:${credential.userId}`;
 
-    let posts;
+    let posts: LinkedInPostSummary[];
     try {
       posts = await this.linkedInGateway.fetchRecentPosts(
         plainTextToken,
         authorUrn,
       );
     } finally {
-      // ─── Step 5b: DESTROY the plaintext token ───
-      // MEMORY ISOLATION: Overwrite with empty string immediately
-      // after the Gateway call, whether it succeeded or not.
-      // The original plaintext string becomes unreachable and will
-      // be garbage-collected.
+      // MEMORY ISOLATION: Destroy plaintext access token
       plainTextToken = null;
     }
 
     // ─── Step 6: Sanitize content (Zero Trust) ───
-    // STORED XSS PREVENTION: We strip ALL HTML tags, script blocks,
-    // and dangerous URL protocols from the post content before
-    // persisting. This ensures that portfolio sites consuming our
-    // API cannot be attacked even if they don't sanitize on render.
     const sanitizedPosts: UpsertPostCacheInput[] = posts.map((post) => ({
       userId,
       externalPostId: post.externalPostId,
@@ -142,6 +174,7 @@ export class SyncUserPostsUseCase {
       userId,
       postsCount: sanitizedPosts.length,
       syncedAt: new Date(),
+      tokenRefreshed,
     };
   }
 }

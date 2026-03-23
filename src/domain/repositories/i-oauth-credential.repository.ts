@@ -45,6 +45,14 @@ export interface IOAuthCredentialRepository {
     data: Pick<
       CreateOAuthCredentialInput,
       'encryptedAccessToken' | 'iv' | 'authTag' | 'expiresAt'
-    >,
+    > & { refreshToken?: string | null },
   ): Promise<OAuthCredential>;
+
+  /**
+   * Find all active (non-expired) OAuth credentials.
+   * Used by the mass sync worker to process all linked users.
+   *
+   * @returns Array of active credentials
+   */
+  findAllActive(): Promise<OAuthCredential[]>;
 }
