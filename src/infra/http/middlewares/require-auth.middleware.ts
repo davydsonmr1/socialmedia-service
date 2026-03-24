@@ -4,26 +4,21 @@
 // Protects SaaS dashboard routes with JWT-based
 // session authentication.
 //
-// The JWT is stored in an HttpOnly cookie named
-// `__Host-saas_session`, set during the OAuth callback.
+// The JWT is stored in an HttpOnly cookie:
+// - Production: `__Host-saas_session` (Secure + Path=/)
+// - Development: `saas_session` (http://localhost compat)
 //
 // INFOSEC:
-// - `__Host-` prefix enforces Secure + Path=/ + no Domain
 // - HttpOnly prevents JavaScript access (XSS mitigation)
-// - SameSite=Strict prevents CSRF on dashboard routes
+// - SameSite prevents CSRF on dashboard routes
 // - Token expiry is validated by @fastify/jwt automatically
 // =====================================================
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
-/**
- * Cookie name for the SaaS session JWT.
- * The `__Host-` prefix is the strictest cookie security level:
- * - Must be Secure (HTTPS only)
- * - Must not have a Domain attribute
- * - Path must be /
- */
-const SESSION_COOKIE_NAME = '__Host-saas_session';
+// ─── Environment-Aware Cookie Name ───
+const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
+const SESSION_COOKIE_NAME = IS_PRODUCTION ? '__Host-saas_session' : 'saas_session';
 
 // Extend Fastify's type system so `request.user` contains our JWT payload
 declare module '@fastify/jwt' {
@@ -37,7 +32,7 @@ declare module '@fastify/jwt' {
  * Fastify preHandler hook that validates the SaaS session JWT.
  *
  * Flow:
- * 1. Extract JWT from the `__Host-saas_session` cookie
+ * 1. Extract JWT from the session cookie
  * 2. Verify signature + expiry via @fastify/jwt
  * 3. Inject `request.user.sub` (userId) for downstream handlers
  * 4. Reject with 401 if missing/invalid/expired
@@ -60,9 +55,10 @@ export async function requireAuthMiddleware(
   }
 
   try {
-    // @fastify/jwt verifies signature, expiry, and decodes the payload.
-    // The decoded payload is automatically set on `request.user`.
-    await request.jwtVerify({ onlyCookie: true });
+    // Manually verify the token extracted from the cookie
+    // since the cookie name is environment-dependent.
+    const decoded = request.server.jwt.verify<{ sub: string }>(token);
+    request.user = decoded;
   } catch (error: unknown) {
     request.log.warn(
       { err: error },
