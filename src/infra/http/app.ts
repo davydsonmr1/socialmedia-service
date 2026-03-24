@@ -46,12 +46,11 @@ const REDACTED_PATHS = [
 
 /**
  * Name of the HttpOnly cookie that stores the SaaS session JWT.
- * The `__Host-` prefix enforces:
- * - Must be Secure (HTTPS only)
- * - Must not have a Domain attribute
- * - Path must be /
+ * Production: `__Host-` prefix enforces Secure + Path=/ + no Domain.
+ * Development: plain name so http://localhost works correctly.
  */
-const SESSION_COOKIE_NAME = '__Host-saas_session';
+const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
+const SESSION_COOKIE_NAME = IS_PRODUCTION ? '__Host-saas_session' : 'saas_session';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const isProduction = process.env['NODE_ENV'] === 'production';

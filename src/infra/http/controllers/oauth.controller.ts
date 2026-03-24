@@ -12,8 +12,14 @@
 //
 // JWT SESSION:
 // After successful authentication, a JWT containing the
-// userId is set in an HttpOnly cookie (`__Host-saas_session`).
+// userId is set in an HttpOnly cookie (`__Host-saas_session`
+// in production, `saas_session` in development).
 // This cookie is the SaaS session for the dashboard frontend.
+//
+// DEV vs PROD:
+// The `__Host-` prefix requires Secure (HTTPS). In dev
+// over http://localhost, we use unprefixed cookie names
+// with `secure: false` so the browser accepts them.
 // =====================================================
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -22,20 +28,15 @@ import type { GenerateOAuthUrlUseCase } from '../../../application/use-cases/gen
 import type { ProcessOAuthCallbackUseCase } from '../../../application/use-cases/process-oauth-callback.usecase.js';
 import { UnauthorizedError } from '../../../domain/errors/unauthorized.error.js';
 
-/**
- * Cookie name for the OAuth CSRF state token.
- * Prefixed with `__Host-` for maximum cookie security:
- * - Must be Secure
- * - Must not have a Domain attribute
- * - Path must be /
- */
-const STATE_COOKIE_NAME = '__Host-oauth_state';
+// ─── Environment-Aware Cookie Config ───
+const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
 
 /**
- * Cookie name for the SaaS session JWT.
- * Identical prefix rules as the state cookie.
+ * In production: `__Host-` prefix enforces Secure + Path=/ + no Domain.
+ * In development: plain name so http://localhost works correctly.
  */
-const SESSION_COOKIE_NAME = '__Host-saas_session';
+const STATE_COOKIE_NAME = IS_PRODUCTION ? '__Host-oauth_state' : 'oauth_state';
+const SESSION_COOKIE_NAME = IS_PRODUCTION ? '__Host-saas_session' : 'saas_session';
 
 /**
  * Maximum age of the state cookie in seconds.
@@ -70,12 +71,12 @@ export class OAuthController {
 
     // Set the CSRF state token in a strictly secure cookie.
     // HttpOnly: JavaScript cannot read it (XSS mitigation)
-    // Secure: Only sent over HTTPS
+    // Secure: Only HTTPS in production (relaxed in dev for localhost)
     // SameSite=Lax: Sent on top-level navigations (required for OAuth redirect)
     // MaxAge=300: Expires in 5 minutes
     void reply.setCookie(STATE_COOKIE_NAME, state, {
       httpOnly: true,
-      secure: true,
+      secure: IS_PRODUCTION,
       sameSite: 'lax',
       path: '/',
       maxAge: STATE_COOKIE_MAX_AGE_SECONDS,
@@ -155,13 +156,13 @@ export class OAuthController {
 
     // ─── Set Session Cookie ───
     // HttpOnly: JavaScript cannot read it (XSS mitigation)
-    // Secure: HTTPS only
-    // SameSite=Strict: Not sent on cross-origin requests (CSRF mitigation)
+    // Secure: HTTPS only in production (relaxed in dev)
+    // SameSite=Lax: Allows the cookie to be sent on the OAuth redirect back
     // MaxAge: 7 days (matches JWT expiry)
     void reply.setCookie(SESSION_COOKIE_NAME, sessionToken, {
       httpOnly: true,
-      secure: true,
-      sameSite: 'strict',
+      secure: IS_PRODUCTION,
+      sameSite: 'lax',
       path: '/',
       maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
     });
@@ -171,7 +172,7 @@ export class OAuthController {
     void reply.clearCookie(STATE_COOKIE_NAME, { path: '/' });
 
     // ─── Redirect to Frontend Dashboard ───
-    const frontendUrl = process.env['FRONTEND_URL'] ?? 'http://localhost:5173';
+    const frontendUrl = process.env['FRONTEND_URL'] ?? 'http://localhost:3000';
     void reply.redirect(`${frontendUrl}/dashboard`);
   }
 }
