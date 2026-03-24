@@ -2,8 +2,15 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import { api, type ApiKeySummary } from "@/lib/api";
-import { ApiKeyModal } from "@/components/api-key-modal";
+
+// Force client-side only rendering — prevents Vercel build
+// from server-rendering the modal (which uses document API)
+const ApiKeyModal = dynamic(
+  () => import("@/components/api-key-modal").then((mod) => mod.ApiKeyModal),
+  { ssr: false }
+);
 
 export default function DashboardPage() {
   const router = useRouter();
