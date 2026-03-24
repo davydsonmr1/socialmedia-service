@@ -8,12 +8,7 @@
   "rewrites": [
     { "source": "/(.*)", "destination": "/main/server.js" }
   ],
-  "crons": [
-    {
-      "path": "/api/internal/cron/sync",
-      "schedule": "0 * * * *"
-    }
-  ],
+  "crons": [],
   "headers": [
     {
       "source": "/api/v1/(.*)",
