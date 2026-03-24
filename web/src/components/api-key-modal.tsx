@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 interface ApiKeyModalProps {
   plainKey: string;
@@ -10,14 +10,24 @@ interface ApiKeyModalProps {
 
 export function ApiKeyModal({ plainKey, keyHint, onClose }: ApiKeyModalProps) {
   const [copied, setCopied] = useState(false);
+  const [isClient, setIsClient] = useState(false);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   const handleCopy = useCallback(async () => {
+    if (typeof document === "undefined") return;
+
     try {
-      await navigator.clipboard.writeText(plainKey);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(plainKey);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2500);
+        return;
+      }
+      throw new Error("Clipboard API not available");
     } catch {
-      // Fallback for older browsers
       const textarea = document.createElement("textarea");
       textarea.value = plainKey;
       textarea.style.position = "fixed";
@@ -31,6 +41,8 @@ export function ApiKeyModal({ plainKey, keyHint, onClose }: ApiKeyModalProps) {
     }
   }, [plainKey]);
 
+  if (!isClient) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
       {/* Backdrop */}
@@ -41,7 +53,7 @@ export function ApiKeyModal({ plainKey, keyHint, onClose }: ApiKeyModalProps) {
 
       {/* Modal */}
       <div
-        className="relative w-full max-w-lg rounded-2xl border p-6 md:p-8 animate-in fade-in zoom-in duration-200"
+        className="relative w-full max-w-lg rounded-2xl border p-6 md:p-8"
         style={{
           background: "var(--color-surface)",
           borderColor: "var(--color-border)",
@@ -66,7 +78,7 @@ export function ApiKeyModal({ plainKey, keyHint, onClose }: ApiKeyModalProps) {
           </div>
         </div>
 
-        {/* ⚠️ Security Warning */}
+        {/* Security Warning */}
         <div
           className="rounded-lg border px-4 py-3 mb-5 flex items-start gap-3"
           style={{
