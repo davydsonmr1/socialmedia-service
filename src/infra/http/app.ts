@@ -50,7 +50,7 @@ const REDACTED_PATHS = [
  * Development: plain name so http://localhost works correctly.
  */
 const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
-const SESSION_COOKIE_NAME = IS_PRODUCTION ? '__Host-saas_session' : 'saas_session';
+const SESSION_COOKIE_NAME = 'saas_session';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const isProduction = process.env['NODE_ENV'] === 'production';

@@ -32,11 +32,13 @@ import { UnauthorizedError } from '../../../domain/errors/unauthorized.error.js'
 const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
 
 /**
- * In production: `__Host-` prefix enforces Secure + Path=/ + no Domain.
- * In development: plain name so http://localhost works correctly.
+ * Cookie names for OAuth state and JWT session.
+ * We use plain names (no `__Host-` prefix) because the frontend
+ * and backend are on different domains (Vercel ↔ Render),
+ * requiring SameSite=None which is incompatible with `__Host-`.
  */
-const STATE_COOKIE_NAME = IS_PRODUCTION ? '__Host-oauth_state' : 'oauth_state';
-const SESSION_COOKIE_NAME = IS_PRODUCTION ? '__Host-saas_session' : 'saas_session';
+const STATE_COOKIE_NAME = 'oauth_state';
+const SESSION_COOKIE_NAME = 'saas_session';
 
 /**
  * Maximum age of the state cookie in seconds.
@@ -162,7 +164,7 @@ export class OAuthController {
     void reply.setCookie(SESSION_COOKIE_NAME, sessionToken, {
       httpOnly: true,
       secure: IS_PRODUCTION,
-      sameSite: 'lax',
+      sameSite: 'none',
       path: '/',
       maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
     });
