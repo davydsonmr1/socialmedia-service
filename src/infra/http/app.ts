@@ -149,6 +149,18 @@ export async function buildApp(): Promise<FastifyInstance> {
     }),
   });
 
+  // ─── Catch-All Content Type Parser ───
+  // Some clients (ReqBin, Postman, cURL) send POST requests with
+  // unexpected Content-Type headers (e.g. text/plain). Since several
+  // POST endpoints (like /api/v1/posts/sync) don't require a body,
+  // we accept any Content-Type instead of rejecting with 415.
+  app.addContentTypeParser('*', (_request, payload, done) => {
+    let data = '';
+    payload.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+    payload.on('end', () => { done(null, data); });
+    payload.on('error', (err: Error) => { done(err, undefined); });
+  });
+
   // ─── Global Error Handler ───
   app.setErrorHandler((error, request, reply) => globalErrorHandler(error as Error, request, reply));
 

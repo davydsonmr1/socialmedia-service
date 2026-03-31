@@ -101,52 +101,92 @@ export class SyncUserPostsUseCase {
       // 3. Encrypt the new access token
       // 4. Persist the updated credential
       // 5. Destroy all plaintext tokens
-      let plainRefreshToken: string | null = this.cryptoService.decrypt(
-        credential.refreshToken,
-        credential.iv,
-        credential.authTag,
-      );
-
       try {
-        const refreshResult = await this.linkedInGateway.refreshAccessToken(
-          plainRefreshToken,
+        let plainRefreshToken: string | null = this.cryptoService.decrypt(
+          credential.refreshToken,
+          credential.iv,
+          credential.authTag,
         );
 
-        // IMMEDIATELY encrypt the new access token
-        const newEncrypted = this.cryptoService.encrypt(refreshResult.accessToken);
+        try {
+          const refreshResult = await this.linkedInGateway.refreshAccessToken(
+            plainRefreshToken,
+          );
 
-        const newExpiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000);
+          // IMMEDIATELY encrypt the new access token
+          const newEncrypted = this.cryptoService.encrypt(refreshResult.accessToken);
 
-        await this.oauthCredentialRepository.updateToken(userId, {
-          encryptedAccessToken: newEncrypted.encryptedText,
-          iv: newEncrypted.iv,
-          authTag: newEncrypted.authTag,
-          refreshToken: refreshResult.refreshToken ?? credential.refreshToken,
-          expiresAt: newExpiresAt,
-        });
+          const newExpiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000);
 
-        // Update the local credential reference for the fetch step
-        credential.encryptedAccessToken = newEncrypted.encryptedText;
-        credential.iv = newEncrypted.iv;
-        credential.authTag = newEncrypted.authTag;
-        credential.expiresAt = newExpiresAt;
+          await this.oauthCredentialRepository.updateToken(userId, {
+            encryptedAccessToken: newEncrypted.encryptedText,
+            iv: newEncrypted.iv,
+            authTag: newEncrypted.authTag,
+            refreshToken: refreshResult.refreshToken ?? credential.refreshToken,
+            expiresAt: newExpiresAt,
+          });
 
-        tokenRefreshed = true;
-      } finally {
-        // MEMORY ISOLATION: Destroy plaintext refresh token
-        plainRefreshToken = null;
+          // Update the local credential reference for the fetch step
+          credential.encryptedAccessToken = newEncrypted.encryptedText;
+          credential.iv = newEncrypted.iv;
+          credential.authTag = newEncrypted.authTag;
+          credential.expiresAt = newExpiresAt;
+
+          tokenRefreshed = true;
+        } finally {
+          // MEMORY ISOLATION: Destroy plaintext refresh token
+          plainRefreshToken = null;
+        }
+      } catch (refreshError: unknown) {
+        // If refresh fails for ANY reason (decrypt error, gateway error,
+        // expired refresh token, etc.), return a warning instead of crashing.
+        const errorMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+        return {
+          userId,
+          postsCount: 0,
+          syncedAt: new Date(),
+          tokenRefreshed: false,
+          warning: `Token refresh failed: ${errorMessage}. Re-authorization may be required.`,
+        };
       }
     }
 
     // ─── Step 4: Decrypt the (possibly refreshed) access token ───
-    let plainTextToken: string | null = this.cryptoService.decrypt(
-      credential.encryptedAccessToken,
-      credential.iv,
-      credential.authTag,
-    );
+    let plainTextToken: string | null;
+    try {
+      plainTextToken = this.cryptoService.decrypt(
+        credential.encryptedAccessToken,
+        credential.iv,
+        credential.authTag,
+      );
+    } catch (decryptError: unknown) {
+      // Decrypt can fail if ENCRYPTION_KEY was rotated or credential is corrupted.
+      // Return a warning instead of crashing with a raw Node.js crypto error.
+      const errorMessage = decryptError instanceof Error ? decryptError.message : String(decryptError);
+      return {
+        userId,
+        postsCount: 0,
+        syncedAt: new Date(),
+        tokenRefreshed,
+        warning: `Token decryption failed: ${errorMessage}. The encryption key may have changed or the credential is corrupted.`,
+      };
+    }
 
     // ─── Step 5: Fetch posts from LinkedIn (with Safeguard) ───
-    const authorUrn = `urn:li:person:${credential.userId}`;
+    // The author URN must use the LinkedIn `sub` (provider ID),
+    // NOT the internal database UUID.
+    if (!credential.linkedInSub) {
+      return {
+        userId,
+        postsCount: 0,
+        syncedAt: new Date(),
+        tokenRefreshed,
+        warning:
+          'LinkedIn provider ID (sub) not found in credential. Please re-link your LinkedIn account to fix this.',
+      };
+    }
+
+    const authorUrn = `urn:li:person:${credential.linkedInSub}`;
 
     let posts: LinkedInPostSummary[];
     try {
