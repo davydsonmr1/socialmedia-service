@@ -16,9 +16,8 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
-// ─── Environment-Aware Cookie Name ───
-const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
-const SESSION_COOKIE_NAME = IS_PRODUCTION ? '__Host-saas_session' : 'saas_session';
+// ─── Cookie Name (plain, no __Host- prefix for cross-domain compat) ───
+const SESSION_COOKIE_NAME = 'saas_session';
 
 // Extend Fastify's type system so `request.user` contains our JWT payload
 declare module '@fastify/jwt' {
