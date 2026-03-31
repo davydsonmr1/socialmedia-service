@@ -67,6 +67,25 @@ export function globalErrorHandler(
     return;
   }
 
+  // ─── Case 3.5: Fastify Built-in Errors ───
+  // Fastify framework errors (e.g. FST_ERR_CTP_INVALID_MEDIA_TYPE → 415,
+  // FST_ERR_CTP_EMPTY_JSON_BODY → 400, etc.) have a statusCode and code.
+  // Return their actual HTTP status instead of masking as 500.
+  if ('statusCode' in error && 'code' in error && typeof error.statusCode === 'number' && error.statusCode >= 400 && error.statusCode < 500) {
+    request.log.warn(
+      { err: error, code: (error as FastifyError).code },
+      `[FastifyError] ${(error as FastifyError).code}: ${error.message}`,
+    );
+
+    void reply.status(error.statusCode).send({
+      error: {
+        code: (error as FastifyError).code ?? 'BAD_REQUEST',
+        message: error.message,
+      },
+    });
+    return;
+  }
+
   // ─── Case 4: Unknown / Unexpected Errors ───
   // INFOSEC: Log the FULL error internally but return NOTHING
   // specific to the client. No stack traces, no DB messages,

@@ -60,17 +60,37 @@ export class PortfolioController {
       throw new UnauthorizedError('API key authentication required.');
     }
 
-    const result = await this.syncUserPostsUseCase.execute(userId);
+    request.log.info({ userId }, '[forceSync] Starting manual sync');
 
-    void reply.status(200).send({
-      message: 'Sincronização concluída.',
-      data: {
-        postsCount: result.postsCount,
-        syncedAt: result.syncedAt.toISOString(),
-        tokenRefreshed: result.tokenRefreshed,
-        ...(result.warning ? { warning: result.warning } : {}),
-      },
-    });
+    try {
+      const result = await this.syncUserPostsUseCase.execute(userId);
+
+      request.log.info(
+        { userId, postsCount: result.postsCount, tokenRefreshed: result.tokenRefreshed, warning: result.warning },
+        '[forceSync] Sync completed',
+      );
+
+      void reply.status(200).send({
+        message: 'Sincronização concluída.',
+        data: {
+          postsCount: result.postsCount,
+          syncedAt: result.syncedAt.toISOString(),
+          tokenRefreshed: result.tokenRefreshed,
+          ...(result.warning ? { warning: result.warning } : {}),
+        },
+      });
+    } catch (error: unknown) {
+      request.log.error(
+        {
+          userId,
+          errorName: (error as Error)?.name,
+          errorMessage: (error as Error)?.message,
+          errorConstructor: (error as Error)?.constructor?.name,
+        },
+        '[forceSync] Sync FAILED — unhandled error',
+      );
+      throw error;
+    }
   }
 }
 
